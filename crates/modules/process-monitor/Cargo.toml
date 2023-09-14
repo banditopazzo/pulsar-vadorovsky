@@ -9,6 +9,7 @@ repository.workspace = true
 test-suite = [ "bpf-common/test-utils" ]
 
 [dependencies]
+aya = { git = "https://github.com/aya-rs/aya", rev = "42fd82e32b85715df78508ef77f79eb8c2edd890", features = ["async_tokio"] }
 bpf-common = { path = "../../bpf-common" }
 bpf-filtering = { path = "../../bpf-filtering" }
 pulsar-core = { path = "../../pulsar-core" }

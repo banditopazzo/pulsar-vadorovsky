@@ -18,4 +18,5 @@ nix = "0.26.2"
 dns-parser = "0.8.0"
 
 [build-dependencies]
+anyhow = "1"
 bpf-builder = { path = "../../bpf-builder" }

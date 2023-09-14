@@ -1,7 +1,8 @@
 use anyhow::Context;
+use aya::include_bytes_aligned;
 use bpf_common::{
-    ebpf_program, parsing::BufferIndex, program::BpfContext, BpfSender, Pid, Program,
-    ProgramBuilder, ProgramError,
+    parsing::BufferIndex, program::BpfContext, BpfSender, Pid, Program, ProgramBuilder,
+    ProgramError,
 };
 
 const MODULE_NAME: &str = "process-monitor";
@@ -10,17 +11,18 @@ pub async fn program(
     ctx: BpfContext,
     sender: impl BpfSender<ProcessEvent>,
 ) -> Result<Program, ProgramError> {
-    let binary = ebpf_program!(&ctx, "probes");
-    let mut program = ProgramBuilder::new(ctx, MODULE_NAME, binary)
-        .raw_tracepoint("sched_process_exec")
-        .raw_tracepoint("sched_process_exit")
-        .raw_tracepoint("sched_process_fork")
-        .raw_tracepoint("sched_switch")
-        .raw_tracepoint("cgroup_mkdir")
-        .raw_tracepoint("cgroup_rmdir")
-        .raw_tracepoint("cgroup_attach_task")
-        .start()
-        .await?;
+    let attach_to_lsm = ctx.lsm_supported();
+    let binary = include_bytes_aligned!(
+        "../../../bpf-programs/process-monitor/target/bpfel-unknown-none/release/process-monitor"
+    );
+    let mut builder = ProgramBuilder::new(ctx, MODULE_NAME, binary.to_vec());
+    if attach_to_lsm {
+        // TODO: Fix the LSM program.
+        // builder = builder.lsm("task_alloc");
+    } else {
+        builder = builder.kprobe("kprobe_task_alloc");
+    }
+    let mut program = builder.start().await?;
     program
         .read_events("map_output_process_event", sender)
         .await?;
