@@ -36,4 +36,5 @@ rand = { version = "0.8.5", optional = true }
 
 
 [build-dependencies]
+anyhow = "1"
 bpf-builder = { path = "../bpf-builder" }

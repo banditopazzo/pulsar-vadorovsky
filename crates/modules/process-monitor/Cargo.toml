@@ -20,4 +20,5 @@ thiserror = "1"
 anyhow = "1.0.65"
 
 [build-dependencies]
+anyhow = "1"
 bpf-builder = { path = "../../bpf-builder" }

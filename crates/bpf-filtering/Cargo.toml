@@ -25,4 +25,5 @@ which = { version = "4.2.5", optional = true }
 cgroups-rs = { version = "0.3.2", optional = true }
 
 [build-dependencies]
+anyhow = "1"
 bpf-builder = { path = "../bpf-builder" }
