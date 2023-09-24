@@ -11,18 +11,14 @@ pub async fn program(
     ctx: BpfContext,
     sender: impl BpfSender<ProcessEvent>,
 ) -> Result<Program, ProgramError> {
-    let attach_to_lsm = ctx.lsm_supported();
     let binary = include_bytes_aligned!(
         "../../../bpf-programs/process-monitor/target/bpfel-unknown-none/release/process-monitor"
     );
-    let mut builder = ProgramBuilder::new(ctx, MODULE_NAME, binary.to_vec());
-    if attach_to_lsm {
-        // TODO: Fix the LSM program.
-        // builder = builder.lsm("task_alloc");
-    } else {
-        builder = builder.kprobe("kprobe_task_alloc");
-    }
-    let mut program = builder.start().await?;
+    let mut program = ProgramBuilder::new(ctx, MODULE_NAME, binary.to_vec())
+        .kprobe("security_task_alloc")
+        // .raw_tracepoint("sched_process_exit")
+        .start()
+        .await?;
     program
         .read_events("map_output_process_event", sender)
         .await?;

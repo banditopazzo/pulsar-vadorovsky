@@ -3,12 +3,14 @@
 
 use aya_bpf::{
     cty::{c_char, c_int, c_long, c_ulong},
-    macros::{kprobe, lsm},
-    programs::{LsmContext, ProbeContext},
+    macros::{kprobe, raw_tracepoint},
+    programs::{ProbeContext, RawTracePointContext},
     BpfContext,
 };
 
-use process_monitor_events::{ForkEvent, ProcessEvent, ProcessEventPayload, ProcessEventVariant};
+use process_monitor_events::{
+    ExitEvent, ForkEvent, ProcessEvent, ProcessEventPayload, ProcessEventVariant,
+};
 
 mod maps;
 #[allow(non_upper_case_globals)]
@@ -54,19 +56,35 @@ extern "C" {
     fn task_struct_signal(task: *const task_struct) -> *const signal_struct;
 }
 
-pub struct Task {
-    inner: *const vmlinux::task_struct,
+pub struct Signal {
+    ptr: *const signal_struct,
 }
 
-impl From<*const vmlinux::task_struct> for Task {
-    fn from(inner: *const vmlinux::task_struct) -> Self {
-        Self { inner }
+impl Signal {
+    pub fn new(ptr: *const signal_struct) -> Self {
+        Self { ptr }
+    }
+
+    pub fn live_counter(&self) -> Result<c_int, c_long> {
+        let live_counter = unsafe { signal_struct_live_counter(self.ptr) };
+        if live_counter < 0 {
+            return Err(live_counter.into());
+        }
+        Ok(live_counter)
     }
 }
 
+pub struct Task {
+    ptr: *const task_struct,
+}
+
 impl Task {
+    pub fn new(ptr: *const task_struct) -> Self {
+        Self { ptr }
+    }
+
     pub fn exit_code(&self) -> Result<c_int, c_long> {
-        let exit_code = unsafe { task_struct_exit_code(self.inner) };
+        let exit_code = unsafe { task_struct_exit_code(self.ptr) };
         if exit_code < 0 {
             return Err(exit_code.into());
         }
@@ -74,7 +92,7 @@ impl Task {
     }
 
     pub fn pid(&self) -> Result<c_int, c_long> {
-        let pid = unsafe { task_struct_pid(self.inner) };
+        let pid = unsafe { task_struct_pid(self.ptr) };
         if pid < 0 {
             return Err(pid.into());
         }
@@ -82,7 +100,7 @@ impl Task {
     }
 
     pub fn tgid(&self) -> Result<c_int, c_long> {
-        let tgid = unsafe { task_struct_tgid(self.inner) };
+        let tgid = unsafe { task_struct_tgid(self.ptr) };
         if tgid < 0 {
             return Err(tgid.into());
         }
@@ -90,26 +108,28 @@ impl Task {
     }
 
     pub fn parent(&self) -> Result<Self, c_long> {
-        let inner = unsafe { task_struct_parent(self.inner) };
-        if inner.is_null() {
+        let ptr = unsafe { task_struct_parent(self.ptr) };
+        if ptr.is_null() {
             return Err(-1);
         }
-        Ok(Self { inner })
+        Ok(Self { ptr })
     }
 
     pub fn group_leader(&self) -> Result<Self, c_long> {
-        let inner = unsafe { task_struct_group_leader(self.inner) };
-        if inner.is_null() {
+        let ptr = unsafe { task_struct_group_leader(self.ptr) };
+        if ptr.is_null() {
             return Err(-1);
         }
-        Ok(Self { inner })
+        Ok(Self { ptr })
     }
-}
 
-#[repr(C)]
-pub struct Event {
-    pub pid: i32,
-    pub tgid: i32,
+    pub fn signal(&self) -> Result<Signal, c_long> {
+        let ptr = unsafe { task_struct_signal(self.ptr) };
+        if ptr.is_null() {
+            return Err(-1);
+        }
+        Ok(Signal::new(ptr))
+    }
 }
 
 #[kprobe]
@@ -121,57 +141,71 @@ pub fn security_task_alloc(ctx: ProbeContext) -> u32 {
 }
 
 fn try_security_task_alloc(ctx: ProbeContext) -> Result<(), c_long> {
-    let task: *const vmlinux::task_struct = ctx.arg(0).ok_or(-1)?;
-    let task: Task = task.into();
+    // let task = Task::new(ctx.arg(0).ok_or(-1)?);
+    let task: *const task_struct = ctx.arg(0).ok_or(-1)?;
     handle_task_alloc(&ctx, task)?;
     Ok(())
 }
 
-// #[lsm(hook = "task_alloc")]
-// pub fn task_alloc(ctx: LsmContext) -> i32 {
-//     match try_task_alloc(ctx) {
-//         Ok(_) => 0,
-//         Err(_) => 0,
-//     }
-// }
-//
-// fn try_task_alloc(ctx: LsmContext) -> Result<(), c_long> {
-//     let task: *const vmlinux::task_struct = unsafe { ctx.arg(0) };
-//     // let task: Task = task.into();
-//     // handle_task_alloc(&ctx, task)?;
-//
-//     let pid = unsafe { task_struct_pid(task) };
-//     let tgid = unsafe { task_struct_tgid(task) };
-//
-//     EVENTS.output(&ctx, &Event { pid, tgid }, 0);
-//
-//     Ok(())
-// }
-
-fn handle_task_alloc<C>(ctx: &C, task: Task) -> Result<(), c_long>
-// fn handle_task_alloc<C>(ctx: &C, task: *const vmlinux::task_struct) -> Result<(), c_long>
+// fn handle_task_alloc<C>(ctx: &C, task: Task) -> Result<(), c_long>
+fn handle_task_alloc<C>(ctx: &C, task: *const task_struct) -> Result<(), c_long>
 where
     C: BpfContext,
 {
-    let pid = task.pid()?;
+    // let pid = task.pid()?;
     // let tgid = task.tgid()?;
-    // let pid = unsafe { task_struct_pid(task) };
-    // let tgid = unsafe { task_struct_tgid(task) };
-    // EVENTS.output(ctx, &Event { pid, tgid }, 0);
+    // let tgid = task.pid()?;
+    let tgid = unsafe { task_struct_tgid(task) };
+
     maps::map_output_process_event.output(
         ctx,
         &ProcessEvent {
             timestamp: 0,
-            pid,
+            pid: tgid,
             payload: ProcessEventPayload {
                 event_type: 0,
                 payload: ProcessEventVariant {
-                    fork: ForkEvent { ppid: pid },
+                    fork: ForkEvent { ppid: tgid },
                 },
             },
         },
         0,
     );
+
+    Ok(())
+}
+
+#[raw_tracepoint(tracepoint = "sched_process_exit")]
+pub fn sched_process_exit(ctx: RawTracePointContext) {
+    let _ = try_sched_process_exit(ctx);
+}
+
+fn try_sched_process_exit(ctx: RawTracePointContext) -> Result<(), c_long> {
+    let task = Task::new(ctx.as_ptr() as *const _);
+
+    // if task.signal()?.live_counter()? > 0 {
+    //     return Ok(());
+    // }
+
+    // let tgid = task.group_leader()?.pid()?;
+    let tgid = task.tgid()?;
+    let exit_code: u32 = task.exit_code()?.try_into().map_err(|_| -1)?;
+
+    maps::map_output_process_event.output(
+        &ctx,
+        &ProcessEvent {
+            timestamp: 0,
+            pid: tgid,
+            payload: ProcessEventPayload {
+                event_type: 1,
+                payload: ProcessEventVariant {
+                    exit: ExitEvent { exit_code },
+                },
+            },
+        },
+        0,
+    );
+
     Ok(())
 }
 
